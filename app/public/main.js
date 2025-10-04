@@ -46,6 +46,23 @@ const initializeMap = () => {
     );
   }
 
+  // Add click event listener to print coordinates and get cloud seeding likelihood
+  map.on('click', async (event) => {
+    const { lat, lng } = event.latlng;
+    console.log(`Clicked location - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
+    
+    try {
+      const response = await fetch(`http://localhost:5000/api/cloud-seeding?lat=${lat}&lon=${lng}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch cloud seeding likelihood');
+      }
+      const result = await response.json();
+      console.log('Cloud Seeding Analysis:', result.data);
+    } catch (error) {
+      console.error('Error fetching cloud seeding likelihood:', error);
+    }
+  });
+
   return map;
 };
 
