@@ -6,7 +6,8 @@ MODIS (Moderate Resolution Imaging Spectroradiometer) cloud property products.
 
 ## Overview
 
-1. **Acquire raw data** from the MOD06_L2 / MYD06_L2 cloud property archive.
+1. **Acquire raw data** from the MOD06_L2 / MYD06_L2 cloud property archive (via the
+   provided download helper or your own tooling).
 2. **Preprocess granules** into tabular features (optical thickness, effective radius, etc.).
 3. **Train** a feed-forward PyTorch model that predicts a cloud seeding likelihood score.
 
@@ -23,10 +24,36 @@ pip install -r requirements-ml.txt
 
 ## Data Acquisition
 
-Download the desired MODIS granules from NASA's Earthdata portal (LP DAAC) using the
-standard browser workflow or another tool of your choice, then store them under
-`data/raw/<collection>/`. Keep track of the collection, dates, and bounding box you used so
-the preprocessing step can reference the same subset.
+1. Create a free Earthdata account at https://urs.earthdata.nasa.gov.
+2. Export credentials for the downloader (`earthaccess` checks these automatically):
+
+   ```bash
+   export EARTHDATA_USERNAME="<your-username>"
+   export EARTHDATA_PASSWORD="<your-password>"
+   ```
+
+   Alternatively, write a `~/.netrc` with your credentials and `chmod 600` the file.
+
+3. Use the helper to fetch granules:
+
+   ```python
+   from pathlib import Path
+   from datetime import datetime
+   from ml.modis_cloud_seeding.download_modis import BoundingBox, discover_and_download
+
+   downloads = discover_and_download(
+       output_dir=Path("data/raw/mod06"),
+       bbox=BoundingBox(min_lon=-116, min_lat=36, max_lon=-114, max_lat=38),
+       start_date=datetime(2023, 6, 1),
+       end_date=datetime(2023, 6, 30),
+       collection_key="mod06",
+       limit=10,
+   )
+   print(downloads)
+   ```
+
+If you prefer manual downloads, place the HDF granules under `data/raw/<collection>/` and
+keep the date/bounding box metadata handy for downstream steps.
 
 ## Preprocessing
 
