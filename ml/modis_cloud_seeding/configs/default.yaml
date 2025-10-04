@@ -1,0 +1,27 @@
+# Sample configuration for training the MODIS cloud seeding likelihood model.
+data:
+  features_path: data/processed/example_features.csv
+  # Optional: list the columns to use as model inputs. Uncomment to override auto-detection.
+  # feature_columns:
+  #   - cloud_optical_thickness_mean
+  #   - cloud_effective_radius_mean
+  label_column: cloud_seeding_label
+  standardize: true
+  split:
+    train: 0.7
+    val: 0.2
+    test: 0.1
+
+model:
+  hidden_dims: [256, 128, 64]
+  dropout: 0.2
+  output_dim: 1
+
+training:
+  task_type: binary
+  epochs: 25
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  early_stopping_patience: 5
+  artifacts_dir: ml_artifacts
