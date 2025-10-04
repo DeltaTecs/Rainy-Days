@@ -19,7 +19,7 @@ const fetchPredictions = async () => {
 
 const initializeMap = () => {
   const map = L.map(mapElement, {
-    center: [39.8283, -98.5795],
+    center: [39.8283, -98.5795], // Default center, will be updated if geolocation succeeds
     zoom: 4,
     zoomControl: false
   });
@@ -30,6 +30,21 @@ const initializeMap = () => {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(map);
+
+  // Try to get user's location
+  if ('geolocation' in navigator) {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        map.setView([latitude, longitude], 10);
+        updateStatus('Map centered on your location.');
+      },
+      (error) => {
+        console.warn('Geolocation error:', error.message);
+        updateStatus('Using default map view.');
+      }
+    );
+  }
 
   return map;
 };
