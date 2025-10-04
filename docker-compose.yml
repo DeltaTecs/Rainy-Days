@@ -8,3 +8,13 @@ services:
     ports:
       - "8080:8080"
     restart: unless-stopped
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: ./app/api
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
