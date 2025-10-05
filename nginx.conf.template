@@ -1,0 +1,55 @@
+# Template NGINX config (inserted into the default /etc/nginx/nginx.conf http{} block)
+# The official nginx:alpine image will run envsubst on files under /etc/nginx/templates/*
+# and place the result into /etc/nginx/conf.d/ (see 20-envsubst-on-templates.sh).
+# We therefore only include directives valid inside the http context (no 'http { }' or 'events { }').
+
+# Upstreams
+upstream web_app { server web:8080; }
+upstream api_server { server api:5000; }
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS server
+server {
+    listen 443 ssl;
+    server_name _;
+
+    # SSL cert/key paths substituted from environment variables at container start
+    ssl_certificate ${SSL_CERT_PATH};
+    ssl_certificate_key ${SSL_KEY_PATH};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # Optional: enable HSTS after confirming HTTPS works
+    # add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # Static files (served directly by NGINX)
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ @web;
+    }
+
+    # Proxy dynamic web app (frontend SPA fallback for routes)
+    location @web {
+        proxy_pass http://web_app;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Proxy API
+    location /api/ {
+        proxy_pass http://api_server/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
