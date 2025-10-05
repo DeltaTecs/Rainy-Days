@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 from datetime import datetime
+from scipy.ndimage import gaussian_filter
 
 app = Flask(__name__)
 CORS(app)
@@ -32,12 +33,28 @@ def get_cloud_seeding_score():
     lats = np.arange(lat_min, lat_max + 1e-9, step)
     lons = np.arange(lon_min, lon_max + 1e-9, step)
 
-    # Dummy seeding scores: random but reproducible within a single process lifetime.
-    # For stable values between re-runs, we could seed with a fixed value; here we let it vary.
+    # Generate landscape-like distribution with spatial correlation
+    # Create a 2D grid for smoother spatial distribution
+    lat_count = len(lats)
+    lon_count = len(lons)
+    
+    # Start with random noise
+    noise_grid = np.random.random((lat_count, lon_count))
+    
+    # Apply Gaussian smoothing to create spatial correlation
+    from scipy.ndimage import gaussian_filter
+    smoothed_grid = gaussian_filter(noise_grid, sigma=2.0)
+    
+    # Normalize to [0,1] range
+    min_val, max_val = smoothed_grid.min(), smoothed_grid.max()
+    if max_val > min_val:
+        smoothed_grid = (smoothed_grid - min_val) / (max_val - min_val)
+    
+    # Convert to list format
     grid = []
-    for lat in lats:
-        for lon in lons:
-            score = float(np.random.random())  # already in [0,1)
+    for i, lat in enumerate(lats):
+        for j, lon in enumerate(lons):
+            score = float(smoothed_grid[i, j])
             grid.append({
                 'latitude': round(float(lat), 3),
                 'longitude': round(float(lon), 3),
