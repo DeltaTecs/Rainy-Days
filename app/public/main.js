@@ -1,11 +1,9 @@
 import * as L from '/vendor/leaflet/leaflet-src.esm.js';
 
-const statusElement = document.getElementById('map-status');
 const mapElement = document.getElementById('map');
 
 const updateStatus = (message, isError = false) => {
-  statusElement.textContent = message;
-  statusElement.style.color = isError ? '#d14343' : '';
+  // Status updates removed - map now covers full screen
 };
 
 const fetchPredictions = async () => {
@@ -36,52 +34,89 @@ const initializeMap = () => {
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  // Grey out everything except Alberta, Canada.
-  fetch('https://raw.githubusercontent.com/codeforgermany/click_that_hood/main/public/data/canada.geojson')
-    .then(r => r.json())
-    .then(provincesData => {
-      const albertaFeature = provincesData.features.find(f => /alberta/i.test(f.properties.name));
-      const otherProvinces = provincesData.features.filter(f => !/alberta/i.test(f.properties.name));
-
-      // Add other provinces with outline only (no opaque fill) so Canada doesn't look darker than the rest of the world.
-      L.geoJSON({ type: 'FeatureCollection', features: otherProvinces }, {
-        style: {
-          color: '#777',
-          weight: 1,
-          fillColor: '#000', // kept for compatibility; fully transparent via fillOpacity
-          fillOpacity: 0
-        }
-      }).addTo(map);
-
-      // Highlight Alberta outline.
-      if (albertaFeature) {
-        const albertaLayer = L.geoJSON(albertaFeature, {
-          style: {
-            color: '#222',
-            weight: 2.5,
-            fillColor: '#ffd54f',
-            fillOpacity: 0.1
-          }
-        }).addTo(map);
-        map.albertaGeoJSON = albertaFeature; // For click detection
-
-        // Fit to Alberta bounds exactly once on initial load.
-        if (!map._albertaFitted) {
-          const bounds = albertaLayer.getBounds();
-            // Add slight padding so border isn't flush with viewport.
-          map.fitBounds(bounds, { padding: [25, 25] });
-          map._albertaFitted = true;
-        }
-      }
-    })
-    .catch(err => {
-      console.error('Failed to render Alberta-focused layering:', err);
-    });
-
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(map);
+
+  // Store the setup function to be called after cloud seeding overlay is ready
+  map._setupOverlay = () => {
+    // Create black overlay covering everything except Alberta
+    fetch('https://raw.githubusercontent.com/codeforgermany/click_that_hood/main/public/data/canada.geojson')
+      .then(r => r.json())
+      .then(provincesData => {
+        const albertaFeature = provincesData.features.find(f => /alberta/i.test(f.properties.name));
+        const otherProvinces = provincesData.features.filter(f => !/alberta/i.test(f.properties.name));
+
+        // Add other provinces with outline only (no opaque fill) so Canada doesn't look darker than the rest of the world.
+        L.geoJSON({ type: 'FeatureCollection', features: otherProvinces }, {
+          style: {
+            color: '#777',
+            weight: 1,
+            fillColor: '#000', // kept for compatibility; fully transparent via fillOpacity
+            fillOpacity: 0
+          }
+        }).addTo(map);
+
+        // Create black overlay that covers everything except Alberta
+        if (albertaFeature) {
+          // Create a world-covering polygon with Alberta as a hole
+          const worldBounds = [
+            [-90, -180], // Southwest corner of world
+            [-90, 180],  // Southeast corner of world
+            [90, 180],   // Northeast corner of world
+            [90, -180],  // Northwest corner of world
+            [-90, -180]  // Close the polygon
+          ];
+
+          // Extract Alberta coordinates (reverse to create hole)
+          const albertaCoordinates = albertaFeature.geometry.coordinates;
+          let albertaHoles = [];
+          
+          if (albertaFeature.geometry.type === 'Polygon') {
+            // Single polygon - reverse the coordinates to create a hole
+            albertaHoles = [albertaCoordinates[0].map(coord => [coord[1], coord[0]]).reverse()];
+          } else if (albertaFeature.geometry.type === 'MultiPolygon') {
+            // Multiple polygons - reverse each one to create holes
+            albertaHoles = albertaCoordinates.map(polygon => 
+              polygon[0].map(coord => [coord[1], coord[0]]).reverse()
+            );
+          }
+
+          // Create polygon with holes (world polygon with Alberta cut out)
+          const maskPolygon = L.polygon([worldBounds, ...albertaHoles], {
+            color: 'transparent',
+            weight: 0,
+            fillColor: '#000000',
+            fillOpacity: 1,
+            interactive: false
+          }).addTo(map);
+
+          // Highlight Alberta outline on top of the mask
+          const albertaLayer = L.geoJSON(albertaFeature, {
+            style: {
+              color: '#222',
+              weight: 2.5,
+              fillColor: '#ffd54f',
+              fillOpacity: 0.1
+            }
+          }).addTo(map);
+          
+          map.albertaGeoJSON = albertaFeature; // For click detection
+
+          // Fit to Alberta bounds exactly once on initial load.
+          if (!map._albertaFitted) {
+            const bounds = albertaLayer.getBounds();
+              // Add slight padding so border isn't flush with viewport.
+            map.fitBounds(bounds, { padding: [25, 25] });
+            map._albertaFitted = true;
+          }
+        }
+      })
+      .catch(err => {
+        console.error('Failed to render Alberta-focused layering:', err);
+      });
+  };
 
   // Removed automatic user geolocation recentering per request.
   updateStatus('Map centered on Alberta, Canada.');
@@ -106,30 +141,8 @@ const placePredictionMarkers = (map, predictions) => {
     return;
   }
 
-  const bounds = L.latLngBounds();
-
-  regions.forEach((region) => {
-    const confidence = Math.round(region.confidence * 100);
-    const coordinates = L.latLng(region.coordinates);
-
-    L.marker(coordinates)
-      .addTo(map)
-      .bindPopup(`
-        <strong>${region.name}</strong><br />
-        Estimated cloud seeding suitability: ${confidence}%
-      `);
-
-    bounds.extend(coordinates);
-  });
-
-  // Only fit bounds if every region lies within a loose bounding box around Alberta.
-  const allWithinAlberta = regions.every(r => isWithinAlbertaBox(L.latLng(r.coordinates)));
-  if (allWithinAlberta && regions.length) {
-    map.fitBounds(bounds, { padding: [30, 30] });
-  } else if (!allWithinAlberta) {
-    // Keep original center, maybe zoom slightly if markers are far.
-    console.log('Skipping fitBounds to keep Alberta focus. Some regions lie outside the Alberta focus area.');
-  }
+  // Markers removed - no location markers will be displayed
+  // No bounds fitting needed since there are no markers
   updateStatus('Sample data displayed. Replace the API stub with your model outputs.');
 };
 
@@ -199,9 +212,13 @@ const initialize = async () => {
     try {
       const cloudSeeding = await fetchCloudSeedingScores();
       renderCloudSeedingOverlay(map, cloudSeeding);
+      // Add the black overlay after cloud seeding tiles so it appears on top
+      map._setupOverlay();
       updateStatus('Sample data displayed with cloud seeding overlay.');
     } catch (overlayError) {
       console.error(overlayError);
+      // Even if cloud seeding fails, we still want the black overlay
+      map._setupOverlay();
       updateStatus('Sample data displayed. Cloud seeding overlay unavailable.');
     }
   } catch (error) {
