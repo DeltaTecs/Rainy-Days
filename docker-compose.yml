@@ -1,24 +1,24 @@
 services:
-#  nginx:
-#    image: nginx:alpine
-#    ports:
-#      - "80:80"
-#      - "443:443"
-#    volumes:
-#      # Provide template for envsubst (cert paths) processed at container start
-#      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
-#      - ./app/public:/usr/share/nginx/html
-#      - ${CERTBOT_PATH}:/etc/letsencrypt:ro
-#    environment:
-#      - SSL_CERT_PATH=${SSL_CERT_PATH}
-#      - SSL_KEY_PATH=${SSL_KEY_PATH}
-#      - CERTBOT_PATH=${CERTBOT_PATH}
-#    env_file:
-#      - .env
-#    depends_on:
-#      - web
-#      - api
-#    restart: unless-stopped
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Provide template for envsubst (cert paths) processed at container start
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./app/public:/usr/share/nginx/html
+      - ${CERTBOT_PATH}:/etc/letsencrypt:ro
+    environment:
+      - SSL_CERT_PATH=${SSL_CERT_PATH}
+      - SSL_KEY_PATH=${SSL_KEY_PATH}
+      - CERTBOT_PATH=${CERTBOT_PATH}
+    env_file:
+      - .env
+    depends_on:
+      - web
+      - api
+    restart: unless-stopped
 
   web:
     build:
@@ -27,18 +27,16 @@ services:
     environment:
       PORT: 8080
       CLOUD_SEEDING_API_BASE_URL: http://api:5000
-    expose:
+    ports:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
       - api
-    ports:
-      - "8080:8080"
 
   api:
     build:
       context: ./app/api
       dockerfile: Dockerfile
-    expose:
-      - "5000"
-    # Publish container port 8080 to host port 8080 so you can access http://localhost:8080
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
