@@ -19,8 +19,9 @@ app.get('/api/predictions', (_req, res) => {
     message: 'Cloud seeding prediction placeholder',
     regions: [
       {
-        name: 'Sample Region',
-        coordinates: { lat: 39.7392, lng: -104.9903 },
+        // Sample region moved to a central Alberta coordinate so the frontend stays focused there.
+        name: 'Central Alberta Sample',
+        coordinates: { lat: 53.9333, lng: -116.5765 },
         confidence: 0.42
       }
     ]

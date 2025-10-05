@@ -19,47 +19,54 @@ const fetchPredictions = async () => {
 
 const initializeMap = () => {
   const map = L.map(mapElement, {
-    center: [56.1304, -106.3468], // Center on Canada
-    zoom: 4,
+    // Start roughly centered; we'll refine to exact province bounds once GeoJSON loads.
+    center: [53.9333, -116.5765],
+    zoom: 5,
     zoomControl: false
   });
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  // Add the world overlay in gray
-  fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json')
-    .then(response => response.json())
-    .then(worldData => {
-      // First, extract Canada from the world data
-      const canadaFeature = worldData.features.find(f => f.properties.name === 'Canada');
-      const worldWithoutCanada = {
-        type: 'FeatureCollection',
-        features: worldData.features.filter(f => f.properties.name !== 'Canada')
-      };
+  // Grey out everything except Alberta, Canada.
+  fetch('https://raw.githubusercontent.com/codeforgermany/click_that_hood/main/public/data/canada.geojson')
+    .then(r => r.json())
+    .then(provincesData => {
+      const albertaFeature = provincesData.features.find(f => /alberta/i.test(f.properties.name));
+      const otherProvinces = provincesData.features.filter(f => !/alberta/i.test(f.properties.name));
 
-      // Add the grayed-out world (excluding Canada)
-      L.geoJSON(worldWithoutCanada, {
+      // Add other provinces with outline only (no opaque fill) so Canada doesn't look darker than the rest of the world.
+      L.geoJSON({ type: 'FeatureCollection', features: otherProvinces }, {
         style: {
-          color: '#666',
+          color: '#777',
           weight: 1,
-          fillColor: '#888',
-          fillOpacity: 0.6
+          fillColor: '#000', // kept for compatibility; fully transparent via fillOpacity
+          fillOpacity: 0
         }
       }).addTo(map);
 
-      // Add Canada with normal styling
-      if (canadaFeature) {
-        const canadaLayer = L.geoJSON(canadaFeature, {
+      // Highlight Alberta outline.
+      if (albertaFeature) {
+        const albertaLayer = L.geoJSON(albertaFeature, {
           style: {
-            color: '#333',
-            weight: 2,
-            fillOpacity: 0
+            color: '#222',
+            weight: 2.5,
+            fillColor: '#ffd54f',
+            fillOpacity: 0.1
           }
         }).addTo(map);
+        map.albertaGeoJSON = albertaFeature; // For click detection
 
-        // Store Canada's GeoJSON for later use in click detection
-        map.canadaGeoJSON = canadaFeature;
+        // Fit to Alberta bounds exactly once on initial load.
+        if (!map._albertaFitted) {
+          const bounds = albertaLayer.getBounds();
+            // Add slight padding so border isn't flush with viewport.
+          map.fitBounds(bounds, { padding: [25, 25] });
+          map._albertaFitted = true;
+        }
       }
+    })
+    .catch(err => {
+      console.error('Failed to render Alberta-focused layering:', err);
     });
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -67,27 +74,15 @@ const initializeMap = () => {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(map);
 
-  // Try to get user's location
-  if ('geolocation' in navigator) {
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        map.setView([latitude, longitude], 10);
-        updateStatus('Map centered on your location.');
-      },
-      (error) => {
-        console.warn('Geolocation error:', error.message);
-        updateStatus('Using default map view.');
-      }
-    );
-  }
+  // Removed automatic user geolocation recentering per request.
+  updateStatus('Map centered on Alberta, Canada.');
 
   // Add click event listener to print coordinates and get cloud seeding likelihood
   map.on('click', async (event) => {
     const { lat, lng } = event.latlng;
     
-    // Check if the clicked point is within Canada
-    if (map.canadaGeoJSON) {
+    // Check if the clicked point is within Alberta
+    if (map.albertaGeoJSON) {
       const point = {
         type: 'Feature',
         geometry: {
@@ -96,17 +91,17 @@ const initializeMap = () => {
         }
       };
 
-      const isInCanada = leafletPip.pointInLayer(
+      const isInAlberta = leafletPip.pointInLayer(
         [lng, lat],
-        L.geoJSON(map.canadaGeoJSON)
+        L.geoJSON(map.albertaGeoJSON)
       ).length > 0;
 
-      if (!isInCanada) {
-        console.log('Click ignored - location outside Canada');
+      if (!isInAlberta) {
+        console.log('Click ignored - location outside Alberta');
         return;
       }
 
-      console.log(`Clicked location in Canada - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
+      console.log(`Clicked location in Alberta - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
       
       try {
         const response = await fetch(`http://localhost:5000/api/cloud-seeding?lat=${lat}&lon=${lng}`);
@@ -122,6 +117,15 @@ const initializeMap = () => {
   });
 
   return map;
+};
+
+const ALBERTA_CENTER = L.latLng(53.9333, -116.5765);
+const ALBERTA_BOUNDS_PADDING_DEG = 6; // Rough padding box to keep focus in province
+const isWithinAlbertaBox = (latlng) => {
+  return latlng.lat <= (ALBERTA_CENTER.lat + ALBERTA_BOUNDS_PADDING_DEG) &&
+         latlng.lat >= (ALBERTA_CENTER.lat - ALBERTA_BOUNDS_PADDING_DEG) &&
+         latlng.lng <= (ALBERTA_CENTER.lng + ALBERTA_BOUNDS_PADDING_DEG) &&
+         latlng.lng >= (ALBERTA_CENTER.lng - ALBERTA_BOUNDS_PADDING_DEG);
 };
 
 const placePredictionMarkers = (map, predictions) => {
@@ -148,7 +152,14 @@ const placePredictionMarkers = (map, predictions) => {
     bounds.extend(coordinates);
   });
 
-  map.fitBounds(bounds, { padding: [30, 30] });
+  // Only fit bounds if every region lies within a loose bounding box around Alberta.
+  const allWithinAlberta = regions.every(r => isWithinAlbertaBox(L.latLng(r.coordinates)));
+  if (allWithinAlberta && regions.length) {
+    map.fitBounds(bounds, { padding: [30, 30] });
+  } else if (!allWithinAlberta) {
+    // Keep original center, maybe zoom slightly if markers are far.
+    console.log('Skipping fitBounds to keep Alberta focus. Some regions lie outside the Alberta focus area.');
+  }
   updateStatus('Sample data displayed. Replace the API stub with your model outputs.');
 };
 
