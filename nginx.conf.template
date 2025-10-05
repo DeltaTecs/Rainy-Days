@@ -5,7 +5,7 @@
 
 # Upstreams
 upstream web_app { server web:8080; }
-upstream api_server { server api:5000; }
+upstream api_server { server api:5000; } # Internal Python service (not directly exposed now)
 
 # Redirect HTTP to HTTPS
 server {
@@ -44,9 +44,12 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Proxy API
+    # API aggregator (Node). All /api/* go to the web_app which in turn calls the
+    # internal Python service at http://api:5000 when needed (e.g. /api/cloud-seeding).
+    # This fixes the 404 you observed hitting /api/predictions which previously
+    # was incorrectly routed straight to the Python container (which only serves /api/cloud-seeding).
     location /api/ {
-        proxy_pass http://api_server;
+        proxy_pass http://web_app;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
