@@ -1,4 +1,6 @@
+# ml/modis_cloud_seeding/forecast.py
 """Forecast daily cloud properties and derive seedability scores."""
+
 from __future__ import annotations
 
 import argparse
@@ -39,10 +41,16 @@ class ForecastSettings:
         return max(0.0, 1.0 - self.train_fraction - self.val_fraction)
 
 
-def _lagged_feature_frame(df: pd.DataFrame, target_columns: Sequence[str], lags: Sequence[int]) -> pd.DataFrame:
+def _lagged_feature_frame(
+    df: pd.DataFrame,
+    target_columns: Sequence[str],
+    lags: Sequence[int],
+) -> pd.DataFrame:
     frame = df.copy()
+
     if "date" not in frame.columns:
         raise KeyError("Daily feature table must contain a 'date' column.")
+
     frame["date"] = pd.to_datetime(frame["date"], utc=False, errors="coerce")
     frame = frame.dropna(subset=["date"]).copy()
     frame["date"] = frame["date"].dt.tz_localize(None)
@@ -51,6 +59,7 @@ def _lagged_feature_frame(df: pd.DataFrame, target_columns: Sequence[str], lags:
     sort_keys = group_keys + ["date"]
     frame = frame.sort_values(sort_keys).reset_index(drop=True)
 
+    # Add lagged versions of target columns as features
     for lag in sorted(set(lags)):
         if group_keys:
             shifted = frame.groupby(group_keys, sort=False)[list(target_columns)].shift(lag)
@@ -58,6 +67,7 @@ def _lagged_feature_frame(df: pd.DataFrame, target_columns: Sequence[str], lags:
             shifted = frame[list(target_columns)].shift(lag)
         shifted.columns = [f"{col}_lag{lag}" for col in target_columns]
         frame = pd.concat([frame, shifted], axis=1)
+
     return frame
 
 
@@ -71,6 +81,7 @@ def prepare_supervised_dataset(
     frame = _lagged_feature_frame(df, target_columns, lags)
     group_keys = [col for col in ("region_id",) if col in frame.columns]
 
+    # Create future targets (shift backwards by horizon)
     if group_keys:
         future = frame.groupby(group_keys, sort=False)[list(target_columns)].shift(-horizon)
     else:
@@ -78,8 +89,23 @@ def prepare_supervised_dataset(
     future.columns = [f"__target_{col}" for col in target_columns]
     frame = pd.concat([frame, future], axis=1)
 
-    meta_columns = [col for col in ("date", "region_id", "grid_row", "grid_col", "cell_lat_center", "cell_lon_center", "grid_lat_step", "grid_lon_step") if col in frame.columns]
+    meta_columns = [
+        col
+        for col in (
+            "date",
+            "region_id",
+            "grid_row",
+            "grid_col",
+            "cell_lat_center",
+            "cell_lon_center",
+            "grid_lat_step",
+            "grid_lon_step",
+        )
+        if col in frame.columns
+    ]
     target_internal = [f"__target_{col}" for col in target_columns]
+
+    # Features = everything numeric except the internal targets and explicit time/id
     feature_columns = [
         col
         for col in frame.columns
@@ -89,13 +115,21 @@ def prepare_supervised_dataset(
 
     required_columns = feature_columns + target_internal
     dataset = frame.dropna(subset=required_columns).copy()
+
     features = dataset[feature_columns].reset_index(drop=True)
-    labels = dataset[target_internal].rename(columns=lambda name: name.replace("__target_", "")).reset_index(drop=True)
+    labels = (
+        dataset[target_internal]
+        .rename(columns=lambda name: name.replace("__target_", ""))
+        .reset_index(drop=True)
+    )
     meta = dataset[[col for col in meta_columns if col in dataset.columns]].reset_index(drop=True)
+
     return DatasetSplit(features=features, targets=labels, meta=meta)
 
 
-def split_time_series(split: DatasetSplit, *, train_fraction: float, val_fraction: float) -> dict[str, DatasetSplit]:
+def split_time_series(
+    split: DatasetSplit, *, train_fraction: float, val_fraction: float
+) -> dict[str, DatasetSplit]:
     if "date" not in split.meta.columns:
         raise KeyError("Metadata must include a 'date' column for time-based splitting.")
 
@@ -143,28 +177,30 @@ def _fit_multioutput_lightgbm(train: DatasetSplit) -> MultiOutputRegressor:
         reg_lambda=0.1,
     )
     model = MultiOutputRegressor(base)
-    model.fit(
-        train.features.to_numpy(dtype=np.float32),
-        train.targets.to_numpy(dtype=np.float32),
-    )
+    # Fit with DataFrames to preserve feature names
+    model.fit(train.features, train.targets)
     return model
 
 
 def _evaluate(y_true: pd.DataFrame, y_pred: np.ndarray) -> dict:
+    """Compute MAE and RMSE per target column and overall."""
     if y_true.empty:
         return {}
+
     metrics: dict[str, dict[str, float]] = {}
+
     for idx, column in enumerate(y_true.columns):
         true_vals = y_true.iloc[:, idx].to_numpy(dtype=np.float32)
         pred_vals = y_pred[:, idx].astype(np.float32)
-        metrics[column] = {
-            "mae": float(mean_absolute_error(true_vals, pred_vals)),
-            "rmse": float(mean_squared_error(true_vals, pred_vals, squared=False)),
-        }
-    metrics["overall_mae"] = float(mean_absolute_error(y_true.values.flatten(), y_pred.flatten()))
-    metrics["overall_rmse"] = float(
-        mean_squared_error(y_true.values.flatten(), y_pred.flatten(), squared=False)
-    )
+        mae = float(mean_absolute_error(true_vals, pred_vals))
+        rmse = float(np.sqrt(mean_squared_error(true_vals, pred_vals)))
+        metrics[column] = {"mae": mae, "rmse": rmse}
+
+    overall_mae = float(mean_absolute_error(y_true.values.flatten(), y_pred.flatten()))
+    overall_rmse = float(np.sqrt(mean_squared_error(y_true.values.flatten(), y_pred.flatten())))
+    metrics["overall_mae"] = overall_mae
+    metrics["overall_rmse"] = overall_rmse
+
     return metrics
 
 
@@ -174,17 +210,17 @@ def _prediction_frame(
     *,
     target_columns: Sequence[str],
 ) -> pd.DataFrame:
-    predictions = model.predict(feature_frame.to_numpy(dtype=np.float32))
+    predictions = model.predict(feature_frame)
     return pd.DataFrame(predictions, columns=target_columns, index=feature_frame.index)
 
 
-def _historical_predictions(
+def historical_predictions(
     model: MultiOutputRegressor,
     split: DatasetSplit,
 ) -> pd.DataFrame:
     if split.features.empty:
         return pd.DataFrame()
-    preds = model.predict(split.features.to_numpy(dtype=np.float32))
+    preds = model.predict(split.features)
     history = split.meta.copy()
     for idx, column in enumerate(split.targets.columns):
         history[f"actual_{column}"] = split.targets.iloc[:, idx].to_numpy(dtype=np.float32)
@@ -199,7 +235,21 @@ def _latest_feature_rows(
     feature_columns: Sequence[str],
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     frame = _lagged_feature_frame(df, target_columns, lags)
-    meta_cols = [col for col in ("date", "region_id", "grid_row", "grid_col", "cell_lat_center", "cell_lon_center", "grid_lat_step", "grid_lon_step") if col in frame.columns]
+    meta_cols = [
+        col
+        for col in (
+            "date",
+            "region_id",
+            "grid_row",
+            "grid_col",
+            "cell_lat_center",
+            "cell_lon_center",
+            "grid_lat_step",
+            "grid_lon_step",
+        )
+        if col in frame.columns
+    ]
+
     missing_features = [col for col in feature_columns if col not in frame.columns]
     if missing_features:
         raise KeyError(f"Missing required feature columns for inference: {missing_features}")
@@ -246,26 +296,36 @@ def train_and_forecast(
         horizon_dir.mkdir(parents=True, exist_ok=True)
         joblib.dump(model, horizon_dir / "model.joblib")
 
-        metrics = {}
+        metrics: dict[str, dict] = {}
         feature_columns = splits["train"].features.columns.tolist()
 
+        # Persist the training schema for this horizon
+        (horizon_dir / "feature_columns.json").write_text(json.dumps(feature_columns, indent=2))
+
         for split_name, split_data in splits.items():
-            history = _historical_predictions(model, split_data)
-            if not history.empty:
+            hist = historical_predictions(model, split_data)
+            if not hist.empty:
                 metrics[split_name] = _evaluate(
                     split_data.targets,
-                    history[[f"pred_{col}" for col in split_data.targets.columns]].to_numpy(dtype=np.float32),
+                    hist[[f"pred_{col}" for col in split_data.targets.columns]].to_numpy(
+                        dtype=np.float32
+                    ),
                 )
-                history = history.copy()
-                history["target_date"] = pd.to_datetime(history["date"]) + pd.to_timedelta(horizon, unit="D")
-                history["horizon_days"] = horizon
-                history_path = horizon_dir / f"{split_name}_predictions.csv"
-                history.to_csv(history_path, index=False)
+                hist = hist.copy()
+                # Target date is base date + horizon
+                hist["target_date"] = pd.to_datetime(hist["date"]) + pd.to_timedelta(
+                    horizon, unit="D"
+                )
+                hist["horizon_days"] = horizon
+                (horizon_dir / f"{split_name}_predictions.csv").write_text(
+                    hist.to_csv(index=False)
+                )
             else:
                 metrics[split_name] = {}
 
         (horizon_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
+        # One-step-ahead operational forecast using the latest available feature rows
         latest_features, latest_meta = _latest_feature_rows(
             daily_features,
             settings.target_columns,
@@ -274,7 +334,13 @@ def train_and_forecast(
         )
         if latest_features.empty:
             continue
-        latest_predictions = model.predict(latest_features.to_numpy(dtype=np.float32))
+
+        # Force exact training schema (order and width) at inference
+        latest_features = latest_features.reindex(columns=feature_columns, fill_value=np.nan)
+        if list(latest_features.columns) != list(feature_columns):
+            raise RuntimeError("Failed to align latest feature columns to training schema.")
+
+        latest_predictions = model.predict(latest_features)
         for row_idx in range(len(latest_features)):
             meta_row = latest_meta.iloc[row_idx]
             base_timestamp = pd.to_datetime(meta_row.get("date"))
@@ -286,6 +352,7 @@ def train_and_forecast(
                 "forecast_date": forecast_timestamp.date().isoformat(),
                 "horizon_days": horizon,
             }
+            # Add meta columns (except raw date which we already used)
             for meta_column in latest_meta.columns:
                 if meta_column == "date":
                     continue
@@ -372,8 +439,11 @@ def main() -> None:
         artifacts_dir=args.artifacts_dir,
     )
     result = train_and_forecast(daily_features, settings, output_path=args.output)
-    print(result.to_string(index=False))
+    # Print a compact preview for CLI runs
+    with pd.option_context("display.max_columns", None, "display.width", 160):
+        print(result.head(20).to_string(index=False))
 
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
