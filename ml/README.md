@@ -20,7 +20,19 @@ MODIS (Moderate Resolution Imaging Spectroradiometer) cloud property products.
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-ml.txt
+
+# HDF4 support (MOD06 granules)
+
+MOD06_L2 granules are distributed as HDF4. The preprocessing helpers automatically
+fall back to ``pyhdf`` when xarray/netCDF cannot open a file. Install ``pyhdf`` with
+conda-forge for the smoothest experience:
+
+```bash
+conda install -n modis-ml -c conda-forge pyhdf
 ```
+
+If you prefer pip, make sure the HDF4 development libraries are available locally
+before running ``pip install pyhdf``.
 
 ## Data Acquisition
 

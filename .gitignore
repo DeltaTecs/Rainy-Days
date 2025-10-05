@@ -14,3 +14,10 @@
 .cxx
 local.properties
 .idea
+.venv
+ml/modis_cloud_seeding/data
+ml/__pycache__/
+ml/modis_cloud_seeding/__pycache__/
+*.pyc
+tests/__pycache__/
+data/

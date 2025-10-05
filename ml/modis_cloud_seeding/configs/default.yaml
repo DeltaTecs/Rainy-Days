@@ -1,27 +1,41 @@
-# Sample configuration for training the MODIS cloud seeding likelihood model.
+# Configuration for training the MODIS cloud seedability ensemble.
 data:
   features_path: data/processed/example_features.csv
-  # Optional: list the columns to use as model inputs. Uncomment to override auto-detection.
+  label_column: cloud_seeding_label
+  split_column: split
+  # Optional: list of columns to use as model inputs. Comment to auto-infer numeric features.
   # feature_columns:
   #   - cloud_optical_thickness_mean
   #   - cloud_effective_radius_mean
-  label_column: cloud_seeding_label
-  standardize: true
-  split:
-    train: 0.7
-    val: 0.2
-    test: 0.1
+  splits:
+    train: [train]
+    val: [val]
+    test: [test]
+  granule_column: granule
 
-model:
-  hidden_dims: [256, 128, 64]
-  dropout: 0.2
-  output_dim: 1
+lightgbm:
+  n_estimators: 500
+  learning_rate: 0.05
+  max_depth: -1
+  subsample: 0.8
+  colsample_bytree: 0.8
+  min_child_samples: 20
+  early_stopping_rounds: 50
+
+resmlp:
+  hidden_dim: 512
+  num_blocks: 4
+  dropout: 0.1
+  expansion: 4
+
+resmlp_training:
+  epochs: 150
+  batch_size: 512
+  learning_rate: 0.001
+  weight_decay: 0.01
+  early_stopping_patience: 25
 
 training:
-  task_type: binary
-  epochs: 25
-  batch_size: 64
-  learning_rate: 0.001
-  weight_decay: 0.00001
-  early_stopping_patience: 5
   artifacts_dir: ml_artifacts
+  seed: 2024
+  num_classes: 3
