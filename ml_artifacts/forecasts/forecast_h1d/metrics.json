@@ -1,0 +1,86 @@
+{
+  "train": {
+    "cloud_optical_thickness_mean": {
+      "mae": 4.376201152801514,
+      "rmse": 6.367121596668137
+    },
+    "cloud_optical_thickness_std": {
+      "mae": 3.7209250926971436,
+      "rmse": 5.21125465354428
+    },
+    "cloud_effective_radius_mean": {
+      "mae": 2.3212502002716064,
+      "rmse": 3.0751132851178986
+    },
+    "cloud_water_path_mean": {
+      "mae": 49.3182373046875,
+      "rmse": 73.90847644637927
+    },
+    "cloud_top_temperature_mean": {
+      "mae": 5.5333662033081055,
+      "rmse": 7.403485389784196
+    },
+    "cloud_top_pressure_mean": {
+      "mae": 56.334815979003906,
+      "rmse": 74.27839051080065
+    },
+    "overall_mae": 20.267465581147064,
+    "overall_rmse": 43.03430314977491
+  },
+  "val": {
+    "cloud_optical_thickness_mean": {
+      "mae": 7.634659767150879,
+      "rmse": 11.69428892377032
+    },
+    "cloud_optical_thickness_std": {
+      "mae": 5.648985385894775,
+      "rmse": 8.033920378492011
+    },
+    "cloud_effective_radius_mean": {
+      "mae": 5.343966484069824,
+      "rmse": 6.563228603061524
+    },
+    "cloud_water_path_mean": {
+      "mae": 93.4914779663086,
+      "rmse": 149.03914256202967
+    },
+    "cloud_top_temperature_mean": {
+      "mae": 16.180553436279297,
+      "rmse": 19.676972786906035
+    },
+    "cloud_top_pressure_mean": {
+      "mae": 162.28781127929688,
+      "rmse": 200.31002338562593
+    },
+    "overall_mae": 48.43124514245709,
+    "overall_rmse": 102.44374695247848
+  },
+  "test": {
+    "cloud_optical_thickness_mean": {
+      "mae": 9.798429489135742,
+      "rmse": 14.35950092181594
+    },
+    "cloud_optical_thickness_std": {
+      "mae": 7.631114482879639,
+      "rmse": 10.51128616491913
+    },
+    "cloud_effective_radius_mean": {
+      "mae": 5.659854888916016,
+      "rmse": 6.793008901818512
+    },
+    "cloud_water_path_mean": {
+      "mae": 109.31831359863281,
+      "rmse": 168.6148880400245
+    },
+    "cloud_top_temperature_mean": {
+      "mae": 18.246496200561523,
+      "rmse": 22.26540707130191
+    },
+    "cloud_top_pressure_mean": {
+      "mae": 194.67401123046875,
+      "rmse": 231.72337529099218
+    },
+    "overall_mae": 57.55470703123808,
+    "overall_rmse": 117.60476001294074
+  }
+}

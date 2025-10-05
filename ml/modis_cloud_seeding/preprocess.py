@@ -134,17 +134,39 @@ class _HDF4Dataset:
             pass
 
 
-def _apply_scale_offset(array: np.ndarray, attrs: Dict[str, object]) -> np.ndarray:
-    """Apply ``add_offset`` and ``scale_factor`` metadata to the raw array."""
+def _as_scalar(x):
+    import numpy as np
+    if x is None:
+        return None
+    if isinstance(x, (list, tuple)) and len(x):
+        return float(x[0])
+    try:
+        return float(np.asarray(x).item())
+    except Exception:
+        try:
+            return float(x)
+        except Exception:
+            return None
 
-    result = array.astype(np.float64, copy=False)
-    offset = attrs.get("add_offset")
-    scale = attrs.get("scale_factor")
-    if offset is not None:
-        result = result - float(offset)
-    if scale is not None:
-        result = result * float(scale)
-    return result.astype(np.float32, copy=False)
+def _apply_scale_offset(array: np.ndarray, attrs: Dict[str, object]) -> np.ndarray:
+    """
+    Apply CF-style scaling: physical = scale_factor * (raw - add_offset).
+    Handles odd attribute types from HDF4/HDF-EOS.
+    """
+    import numpy as np
+    out = array.astype(np.float64, copy=False)
+
+    scale = _as_scalar(attrs.get("scale_factor"))
+    if scale is None or not np.isfinite(scale):
+        scale = 1.0
+
+    offset = _as_scalar(attrs.get("add_offset"))
+    if offset is None or not np.isfinite(offset):
+        offset = 0.0
+
+    out = scale * (out - offset)
+    return out.astype(np.float32, copy=False)
+
 
 
 def _read_hdf4_dataset(dataset) -> np.ndarray:

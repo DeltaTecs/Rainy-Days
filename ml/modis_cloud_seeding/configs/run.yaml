@@ -1,0 +1,46 @@
+data:
+  feature_columns:
+  - cloud_optical_thickness_mean
+  - cloud_optical_thickness_std
+  - cloud_effective_radius_mean
+  - cloud_water_path_mean
+  - cloud_top_temperature_mean
+  - cloud_top_pressure_mean
+  - granule_count
+  - glaciogenic_fraction
+  - hygroscopic_fraction
+  - seedable_fraction
+  features_path: data/processed/daily_table.csv
+  label_column: cloud_seeding_label
+  split_column: split
+  splits:
+    test:
+    - test
+    train:
+    - train
+    val:
+    - val
+lightgbm:
+  class_weight: null
+  colsample_bytree: 0.8
+  early_stopping_rounds: 50
+  learning_rate: 0.05
+  max_depth: -1
+  min_child_samples: 20
+  n_estimators: 500
+  subsample: 0.8
+resmlp:
+  dropout: 0.1
+  expansion: 4
+  hidden_dim: 512
+  num_blocks: 4
+resmlp_training:
+  batch_size: 512
+  early_stopping_patience: 25
+  epochs: 150
+  learning_rate: 0.001
+  weight_decay: 0.01
+training:
+  artifacts_dir: ml_artifacts
+  num_classes: 3
+  seed: 2024
