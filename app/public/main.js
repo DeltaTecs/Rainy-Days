@@ -19,12 +19,48 @@ const fetchPredictions = async () => {
 
 const initializeMap = () => {
   const map = L.map(mapElement, {
-    center: [39.8283, -98.5795], // Default center, will be updated if geolocation succeeds
+    center: [56.1304, -106.3468], // Center on Canada
     zoom: 4,
     zoomControl: false
   });
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  // Add the world overlay in gray
+  fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json')
+    .then(response => response.json())
+    .then(worldData => {
+      // First, extract Canada from the world data
+      const canadaFeature = worldData.features.find(f => f.properties.name === 'Canada');
+      const worldWithoutCanada = {
+        type: 'FeatureCollection',
+        features: worldData.features.filter(f => f.properties.name !== 'Canada')
+      };
+
+      // Add the grayed-out world (excluding Canada)
+      L.geoJSON(worldWithoutCanada, {
+        style: {
+          color: '#666',
+          weight: 1,
+          fillColor: '#888',
+          fillOpacity: 0.6
+        }
+      }).addTo(map);
+
+      // Add Canada with normal styling
+      if (canadaFeature) {
+        const canadaLayer = L.geoJSON(canadaFeature, {
+          style: {
+            color: '#333',
+            weight: 2,
+            fillOpacity: 0
+          }
+        }).addTo(map);
+
+        // Store Canada's GeoJSON for later use in click detection
+        map.canadaGeoJSON = canadaFeature;
+      }
+    });
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
@@ -49,17 +85,39 @@ const initializeMap = () => {
   // Add click event listener to print coordinates and get cloud seeding likelihood
   map.on('click', async (event) => {
     const { lat, lng } = event.latlng;
-    console.log(`Clicked location - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
     
-    try {
-      const response = await fetch(`http://localhost:5000/api/cloud-seeding?lat=${lat}&lon=${lng}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch cloud seeding likelihood');
+    // Check if the clicked point is within Canada
+    if (map.canadaGeoJSON) {
+      const point = {
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [lng, lat]
+        }
+      };
+
+      const isInCanada = leafletPip.pointInLayer(
+        [lng, lat],
+        L.geoJSON(map.canadaGeoJSON)
+      ).length > 0;
+
+      if (!isInCanada) {
+        console.log('Click ignored - location outside Canada');
+        return;
       }
-      const result = await response.json();
-      console.log('Cloud Seeding Analysis:', result.data);
-    } catch (error) {
-      console.error('Error fetching cloud seeding likelihood:', error);
+
+      console.log(`Clicked location in Canada - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
+      
+      try {
+        const response = await fetch(`http://localhost:5000/api/cloud-seeding?lat=${lat}&lon=${lng}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch cloud seeding likelihood');
+        }
+        const result = await response.json();
+        console.log('Cloud Seeding Analysis:', result.data);
+      } catch (error) {
+        console.error('Error fetching cloud seeding likelihood:', error);
+      }
     }
   });
 
