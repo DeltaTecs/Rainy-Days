@@ -199,7 +199,8 @@ const renderCloudSeedingOverlay = (map, payload) => {
     const rect = L.rectangle(bounds, {
       stroke: false,
       fill: true,
-      fillColor: '#2e7d32',
+      // Updated from green to blue for better contrast per request
+      fillColor: '#1565c0',
       fillOpacity: clamped * maxOpacity,
       interactive: false
     });
