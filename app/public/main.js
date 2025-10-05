@@ -17,6 +17,15 @@ const fetchPredictions = async () => {
   return response.json();
 };
 
+const fetchCloudSeedingScores = async () => {
+  const response = await fetch('/api/cloud-seeding');
+  if (!response.ok) {
+    throw new Error('Failed to load cloud seeding scores.');
+  }
+
+  return response.json();
+};
+
 const initializeMap = () => {
   const map = L.map(mapElement, {
     // Start roughly centered; we'll refine to exact province bounds once GeoJSON loads.
@@ -77,45 +86,6 @@ const initializeMap = () => {
   // Removed automatic user geolocation recentering per request.
   updateStatus('Map centered on Alberta, Canada.');
 
-  // Add click event listener to print coordinates and get cloud seeding likelihood
-  map.on('click', async (event) => {
-    const { lat, lng } = event.latlng;
-    
-    // Check if the clicked point is within Alberta
-    if (map.albertaGeoJSON) {
-      const point = {
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [lng, lat]
-        }
-      };
-
-      const isInAlberta = leafletPip.pointInLayer(
-        [lng, lat],
-        L.geoJSON(map.albertaGeoJSON)
-      ).length > 0;
-
-      if (!isInAlberta) {
-        console.log('Click ignored - location outside Alberta');
-        return;
-      }
-
-      console.log(`Clicked location in Alberta - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
-      
-      try {
-        const response = await fetch(`http://localhost:5000/api/cloud-seeding?lat=${lat}&lon=${lng}`);
-        if (!response.ok) {
-          throw new Error('Failed to fetch cloud seeding likelihood');
-        }
-        const result = await response.json();
-        console.log('Cloud Seeding Analysis:', result.data);
-      } catch (error) {
-        console.error('Error fetching cloud seeding likelihood:', error);
-      }
-    }
-  });
-
   return map;
 };
 
@@ -163,6 +133,59 @@ const placePredictionMarkers = (map, predictions) => {
   updateStatus('Sample data displayed. Replace the API stub with your model outputs.');
 };
 
+const renderCloudSeedingOverlay = (map, payload) => {
+  const gridPoints = payload?.data ?? [];
+  if (!gridPoints.length) {
+    console.warn('No cloud seeding data available for overlay.');
+    return;
+  }
+
+  const step = payload?.meta?.step ?? 0.25;
+  const halfStep = step / 2;
+  const maxOpacity = 0.85;
+
+  if (map.cloudSeedingLayer) {
+    map.removeLayer(map.cloudSeedingLayer);
+  }
+
+  const layer = L.layerGroup();
+
+  gridPoints.forEach(point => {
+    const lat = Number(point?.latitude);
+    const lon = Number(point?.longitude);
+    const score = Number(point?.seeding_score);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return;
+    }
+
+    if (!Number.isFinite(score)) {
+      return;
+    }
+
+    const clamped = Math.max(0, Math.min(1, score));
+
+    const bounds = [
+      [lat - halfStep, lon - halfStep],
+      [lat + halfStep, lon + halfStep]
+    ];
+
+    const rect = L.rectangle(bounds, {
+      stroke: false,
+      fill: true,
+      fillColor: '#2e7d32',
+      fillOpacity: clamped * maxOpacity,
+      interactive: false
+    });
+
+    layer.addLayer(rect);
+  });
+
+  if (layer.getLayers().length) {
+    layer.addTo(map);
+    map.cloudSeedingLayer = layer;
+  }
+};
+
 const initialize = async () => {
   try {
     updateStatus('Loading map...');
@@ -171,6 +194,16 @@ const initialize = async () => {
     updateStatus('Fetching sample predictions...');
     const predictions = await fetchPredictions();
     placePredictionMarkers(map, predictions);
+
+    updateStatus('Applying cloud seeding overlay...');
+    try {
+      const cloudSeeding = await fetchCloudSeedingScores();
+      renderCloudSeedingOverlay(map, cloudSeeding);
+      updateStatus('Sample data displayed with cloud seeding overlay.');
+    } catch (overlayError) {
+      console.error(overlayError);
+      updateStatus('Sample data displayed. Cloud seeding overlay unavailable.');
+    }
   } catch (error) {
     console.error(error);
     updateStatus(error.message, true);
