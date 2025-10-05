@@ -10,6 +10,12 @@
 </head>
 <body>
   <div id="map" role="application" aria-label="Potential cloud seeding regions"></div>
+  <div id="controls-panel">
+    <div class="control-group">
+      <label for="days-slider">Forecast Days: <span id="days-value">7</span></label>
+      <input type="range" id="days-slider" min="1" max="14" value="7" class="slider">
+    </div>
+  </div>
   <script type="module" src="main.js"></script>
 </body>
 </html>

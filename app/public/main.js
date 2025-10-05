@@ -15,8 +15,8 @@ const fetchPredictions = async () => {
   return response.json();
 };
 
-const fetchCloudSeedingScores = async () => {
-  const response = await fetch('/api/cloud-seeding');
+const fetchCloudSeedingScores = async (days = 7) => {
+  const response = await fetch(`/api/cloud-seeding?days=${days}`);
   if (!response.ok) {
     throw new Error('Failed to load cloud seeding scores.');
   }
@@ -41,6 +41,17 @@ const initializeMap = () => {
 
   // Store the setup function to be called after cloud seeding overlay is ready
   map._setupOverlay = () => {
+    // Remove existing overlay layers if they exist
+    if (map.provincesLayer) {
+      map.removeLayer(map.provincesLayer);
+    }
+    if (map.maskLayer) {
+      map.removeLayer(map.maskLayer);
+    }
+    if (map.albertaLayer) {
+      map.removeLayer(map.albertaLayer);
+    }
+
     // Create black overlay covering everything except Alberta
     fetch('https://raw.githubusercontent.com/codeforgermany/click_that_hood/main/public/data/canada.geojson')
       .then(r => r.json())
@@ -49,7 +60,7 @@ const initializeMap = () => {
         const otherProvinces = provincesData.features.filter(f => !/alberta/i.test(f.properties.name));
 
         // Add other provinces with outline only (no opaque fill) so Canada doesn't look darker than the rest of the world.
-        L.geoJSON({ type: 'FeatureCollection', features: otherProvinces }, {
+        const provincesLayer = L.geoJSON({ type: 'FeatureCollection', features: otherProvinces }, {
           style: {
             color: '#777',
             weight: 1,
@@ -57,6 +68,7 @@ const initializeMap = () => {
             fillOpacity: 0
           }
         }).addTo(map);
+        map.provincesLayer = provincesLayer;
 
         // Create black overlay that covers everything except Alberta
         if (albertaFeature) {
@@ -91,6 +103,7 @@ const initializeMap = () => {
             fillOpacity: 1,
             interactive: false
           }).addTo(map);
+          map.maskLayer = maskPolygon;
 
           // Highlight Alberta outline on top of the mask
           const albertaLayer = L.geoJSON(albertaFeature, {
@@ -101,6 +114,7 @@ const initializeMap = () => {
               fillOpacity: 0.1
             }
           }).addTo(map);
+          map.albertaLayer = albertaLayer;
           
           map.albertaGeoJSON = albertaFeature; // For click detection
 
@@ -199,6 +213,42 @@ const renderCloudSeedingOverlay = (map, payload) => {
   }
 };
 
+const setupDaysSlider = (map) => {
+  const slider = document.getElementById('days-slider');
+  const valueDisplay = document.getElementById('days-value');
+  
+  if (!slider || !valueDisplay) {
+    console.error('Days slider elements not found');
+    return;
+  }
+
+  const updateCloudSeeding = async (days) => {
+    try {
+      updateStatus(`Updating cloud seeding data for ${days} days...`);
+      const cloudSeeding = await fetchCloudSeedingScores(days);
+      renderCloudSeedingOverlay(map, cloudSeeding);
+      // Reapply the black overlay on top after updating cloud seeding data
+      if (map._setupOverlay) {
+        map._setupOverlay();
+      }
+      updateStatus(`Cloud seeding data updated for ${days} days ahead.`);
+    } catch (error) {
+      console.error('Failed to update cloud seeding data:', error);
+      updateStatus('Failed to update cloud seeding data.', true);
+    }
+  };
+
+  slider.addEventListener('input', (e) => {
+    const days = parseInt(e.target.value);
+    valueDisplay.textContent = days;
+  });
+
+  slider.addEventListener('change', (e) => {
+    const days = parseInt(e.target.value);
+    updateCloudSeeding(days);
+  });
+};
+
 const initialize = async () => {
   try {
     updateStatus('Loading map...');
@@ -210,7 +260,7 @@ const initialize = async () => {
 
     updateStatus('Applying cloud seeding overlay...');
     try {
-      const cloudSeeding = await fetchCloudSeedingScores();
+      const cloudSeeding = await fetchCloudSeedingScores(7); // Default to 7 days
       renderCloudSeedingOverlay(map, cloudSeeding);
       // Add the black overlay after cloud seeding tiles so it appears on top
       map._setupOverlay();
@@ -221,6 +271,9 @@ const initialize = async () => {
       map._setupOverlay();
       updateStatus('Sample data displayed. Cloud seeding overlay unavailable.');
     }
+
+    // Setup the days slider after map is initialized
+    setupDaysSlider(map);
   } catch (error) {
     console.error(error);
     updateStatus(error.message, true);
