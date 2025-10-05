@@ -1,10 +1,32 @@
 services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Provide template for envsubst (cert paths) processed at container start
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./app/public:/usr/share/nginx/html
+      - ${CERTBOT_PATH}:/etc/letsencrypt:ro
+    environment:
+      - SSL_CERT_PATH=${SSL_CERT_PATH}
+      - SSL_KEY_PATH=${SSL_KEY_PATH}
+      - CERTBOT_PATH=${CERTBOT_PATH}
+    env_file:
+      - .env
+    depends_on:
+      - web
+      - api
+    restart: unless-stopped
+
   web:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       PORT: 8080
+      CLOUD_SEEDING_API_BASE_URL: http://api:5000
     ports:
       - "8080:8080"
     restart: unless-stopped

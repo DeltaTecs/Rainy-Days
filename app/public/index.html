@@ -9,16 +9,25 @@
   <script src="https://unpkg.com/@mapbox/leaflet-pip@latest/leaflet-pip.js"></script>
 </head>
 <body>
-  <main>
-    <h1>Cloud Seeding Predictor</h1>
-    <p>
-      Select a location to continue.
-    </p>
-    <section class="map-section">
-      <div id="map" role="application" aria-label="Potential cloud seeding regions"></div>
-      <div id="map-status" class="status"></div>
-    </section>
-  </main>
+  <div id="map" role="application" aria-label="Potential cloud seeding regions"></div>
+  <div id="controls-panel">
+    <div class="control-group">
+      <label for="days-slider">Forecast Days: <span id="days-value">1</span></label>
+      <input type="range" id="days-slider" min="1" max="7" value="1" class="slider">
+    </div>
+  </div>
+  
+  <div id="legend-panel">
+    <h3>Seeding Success</h3>
+    <div class="legend-item">
+      <div class="legend-color transparent"></div>
+      <span>Low Chance</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color blue" aria-label="High seeding success likelihood"></div>
+      <span>High Chance</span>
+    </div>
+  </div>
   <script type="module" src="main.js"></script>
 </body>
 </html>

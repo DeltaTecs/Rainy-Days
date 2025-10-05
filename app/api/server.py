@@ -2,66 +2,78 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 from datetime import datetime
+from scipy.ndimage import gaussian_filter
 
 app = Flask(__name__)
 CORS(app)
 
-def calculate_cloud_seeding_likelihood(lat, lon):
-    """
-    Calculate the likelihood of successful cloud seeding based on coordinates.
-    This is a simplified mock implementation - in a real scenario, you would:
-    1. Check real-time weather data
-    2. Analyze cloud formation patterns
-    3. Consider temperature and humidity
-    4. Check wind patterns
-    5. Analyze historical success rates
-    """
-    # Mock calculation using latitude and time of year
-    current_month = datetime.now().month
-    
-    # Simplified factors:
-    # - Distance from equator (latitude) affects cloud formation
-    # - Seasonal variations (month) affect precipitation likelihood
-    base_likelihood = np.cos(np.abs(lat) * np.pi / 180) * 0.5  # Higher near equator
-    seasonal_factor = np.sin(current_month * np.pi / 6) * 0.3   # Seasonal variation
-    
-    # Add some randomness to simulate other environmental factors
-    random_factor = np.random.normal(0, 0.1)
-    
-    likelihood = base_likelihood + seasonal_factor + random_factor
-    
-    # Ensure likelihood stays between 0 and 1
-    likelihood = max(0, min(1, likelihood))
-    
-    return likelihood
 
 @app.route('/api/cloud-seeding', methods=['GET'])
-def get_cloud_seeding_likelihood():
-    try:
-        lat = float(request.args.get('lat'))
-        lon = float(request.args.get('lon'))
-        
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            return jsonify({
-                'error': 'Invalid coordinates. Latitude must be between -90 and 90, longitude between -180 and 180'
-            }), 400
-            
-        likelihood = calculate_cloud_seeding_likelihood(lat, lon)
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'latitude': lat,
-                'longitude': lon,
-                'likelihood': round(likelihood, 3),
-                'timestamp': datetime.now().isoformat()
-            }
-        })
-        
-    except (TypeError, ValueError):
-        return jsonify({
-            'error': 'Invalid parameters. Please provide valid lat and lon query parameters'
-        }), 400
+def get_cloud_seeding_score():
+    """Return dummy cloud seeding score values over an Alberta grid.
+
+    Query Parameters:
+        days (int|str): Ignored (present for future expansion / contract change)
+
+    Response:
+        JSON containing a list of grid points (lat, lon) spaced 0.25° apart
+    covering Alberta (approx 49N–60N, -120W–-110W) each with a seeding score
+    float in [0,1].
+    """
+
+    # We intentionally ignore the value of 'days' per instructions, but access it
+    # so that clients know the parameter is acknowledged.
+    _ = request.args.get('days')  # noqa: F841 (explicitly unused)
+
+    lat_min, lat_max = 49.0, 60.0
+    lon_min, lon_max = -120.0, -110.0
+    step = 0.25
+
+    # Generate ranges (inclusive of max with a tiny epsilon tolerance)
+    lats = np.arange(lat_min, lat_max + 1e-9, step)
+    lons = np.arange(lon_min, lon_max + 1e-9, step)
+
+    # Generate landscape-like distribution with spatial correlation
+    # Create a 2D grid for smoother spatial distribution
+    lat_count = len(lats)
+    lon_count = len(lons)
+    
+    # Start with random noise
+    noise_grid = np.random.random((lat_count, lon_count))
+    
+    # Apply Gaussian smoothing to create spatial correlation
+    from scipy.ndimage import gaussian_filter
+    smoothed_grid = gaussian_filter(noise_grid, sigma=2.0)
+    
+    # Normalize to [0,1] range
+    min_val, max_val = smoothed_grid.min(), smoothed_grid.max()
+    if max_val > min_val:
+        smoothed_grid = (smoothed_grid - min_val) / (max_val - min_val)
+    
+    # Convert to list format
+    grid = []
+    for i, lat in enumerate(lats):
+        for j, lon in enumerate(lons):
+            score = float(smoothed_grid[i, j])
+            grid.append({
+                'latitude': round(float(lat), 3),
+                'longitude': round(float(lon), 3),
+                'seeding_score': round(score, 4)
+            })
+
+    return jsonify({
+        'success': True,
+        'generated_at': datetime.utcnow().isoformat() + 'Z',
+        'meta': {
+            'lat_min': lat_min,
+            'lat_max': lat_max,
+            'lon_min': lon_min,
+            'lon_max': lon_max,
+            'step': step,
+            'count': len(grid)
+        },
+        'data': grid
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

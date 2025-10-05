@@ -1,11 +1,9 @@
 import * as L from '/vendor/leaflet/leaflet-src.esm.js';
 
-const statusElement = document.getElementById('map-status');
 const mapElement = document.getElementById('map');
 
 const updateStatus = (message, isError = false) => {
-  statusElement.textContent = message;
-  statusElement.style.color = isError ? '#d14343' : '';
+  // Status updates removed - map now covers full screen
 };
 
 const fetchPredictions = async () => {
@@ -17,111 +15,136 @@ const fetchPredictions = async () => {
   return response.json();
 };
 
+const fetchCloudSeedingScores = async (days = 7) => {
+  const response = await fetch(`/api/cloud-seeding?days=${days}`);
+  if (!response.ok) {
+    throw new Error('Failed to load cloud seeding scores.');
+  }
+
+  return response.json();
+};
+
 const initializeMap = () => {
   const map = L.map(mapElement, {
-    center: [56.1304, -106.3468], // Center on Canada
-    zoom: 4,
+    // Start roughly centered; we'll refine to exact province bounds once GeoJSON loads.
+    center: [53.9333, -116.5765],
+    zoom: 5,
     zoomControl: false
   });
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-  // Add the world overlay in gray
-  fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json')
-    .then(response => response.json())
-    .then(worldData => {
-      // First, extract Canada from the world data
-      const canadaFeature = worldData.features.find(f => f.properties.name === 'Canada');
-      const worldWithoutCanada = {
-        type: 'FeatureCollection',
-        features: worldData.features.filter(f => f.properties.name !== 'Canada')
-      };
-
-      // Add the grayed-out world (excluding Canada)
-      L.geoJSON(worldWithoutCanada, {
-        style: {
-          color: '#666',
-          weight: 1,
-          fillColor: '#888',
-          fillOpacity: 0.6
-        }
-      }).addTo(map);
-
-      // Add Canada with normal styling
-      if (canadaFeature) {
-        const canadaLayer = L.geoJSON(canadaFeature, {
-          style: {
-            color: '#333',
-            weight: 2,
-            fillOpacity: 0
-          }
-        }).addTo(map);
-
-        // Store Canada's GeoJSON for later use in click detection
-        map.canadaGeoJSON = canadaFeature;
-      }
-    });
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(map);
 
-  // Try to get user's location
-  if ('geolocation' in navigator) {
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        map.setView([latitude, longitude], 10);
-        updateStatus('Map centered on your location.');
-      },
-      (error) => {
-        console.warn('Geolocation error:', error.message);
-        updateStatus('Using default map view.');
-      }
-    );
-  }
-
-  // Add click event listener to print coordinates and get cloud seeding likelihood
-  map.on('click', async (event) => {
-    const { lat, lng } = event.latlng;
-    
-    // Check if the clicked point is within Canada
-    if (map.canadaGeoJSON) {
-      const point = {
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [lng, lat]
-        }
-      };
-
-      const isInCanada = leafletPip.pointInLayer(
-        [lng, lat],
-        L.geoJSON(map.canadaGeoJSON)
-      ).length > 0;
-
-      if (!isInCanada) {
-        console.log('Click ignored - location outside Canada');
-        return;
-      }
-
-      console.log(`Clicked location in Canada - Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`);
-      
-      try {
-        const response = await fetch(`http://localhost:5000/api/cloud-seeding?lat=${lat}&lon=${lng}`);
-        if (!response.ok) {
-          throw new Error('Failed to fetch cloud seeding likelihood');
-        }
-        const result = await response.json();
-        console.log('Cloud Seeding Analysis:', result.data);
-      } catch (error) {
-        console.error('Error fetching cloud seeding likelihood:', error);
-      }
+  // Store the setup function to be called after cloud seeding overlay is ready
+  map._setupOverlay = () => {
+    // Remove existing overlay layers if they exist
+    if (map.provincesLayer) {
+      map.removeLayer(map.provincesLayer);
     }
-  });
+    if (map.maskLayer) {
+      map.removeLayer(map.maskLayer);
+    }
+    if (map.albertaLayer) {
+      map.removeLayer(map.albertaLayer);
+    }
+
+    // Create black overlay covering everything except Alberta
+    fetch('https://raw.githubusercontent.com/codeforgermany/click_that_hood/main/public/data/canada.geojson')
+      .then(r => r.json())
+      .then(provincesData => {
+        const albertaFeature = provincesData.features.find(f => /alberta/i.test(f.properties.name));
+        const otherProvinces = provincesData.features.filter(f => !/alberta/i.test(f.properties.name));
+
+        // Add other provinces with outline only (no opaque fill) so Canada doesn't look darker than the rest of the world.
+        const provincesLayer = L.geoJSON({ type: 'FeatureCollection', features: otherProvinces }, {
+          style: {
+            color: '#777',
+            weight: 1,
+            fillColor: '#000', // kept for compatibility; fully transparent via fillOpacity
+            fillOpacity: 0
+          }
+        }).addTo(map);
+        map.provincesLayer = provincesLayer;
+
+        // Create black overlay that covers everything except Alberta
+        if (albertaFeature) {
+          // Create a world-covering polygon with Alberta as a hole
+          const worldBounds = [
+            [-90, -180], // Southwest corner of world
+            [-90, 180],  // Southeast corner of world
+            [90, 180],   // Northeast corner of world
+            [90, -180],  // Northwest corner of world
+            [-90, -180]  // Close the polygon
+          ];
+
+          // Extract Alberta coordinates (reverse to create hole)
+          const albertaCoordinates = albertaFeature.geometry.coordinates;
+          let albertaHoles = [];
+          
+          if (albertaFeature.geometry.type === 'Polygon') {
+            // Single polygon - reverse the coordinates to create a hole
+            albertaHoles = [albertaCoordinates[0].map(coord => [coord[1], coord[0]]).reverse()];
+          } else if (albertaFeature.geometry.type === 'MultiPolygon') {
+            // Multiple polygons - reverse each one to create holes
+            albertaHoles = albertaCoordinates.map(polygon => 
+              polygon[0].map(coord => [coord[1], coord[0]]).reverse()
+            );
+          }
+
+          // Create polygon with holes (world polygon with Alberta cut out)
+          const maskPolygon = L.polygon([worldBounds, ...albertaHoles], {
+            color: 'transparent',
+            weight: 0,
+            fillColor: '#000000',
+            fillOpacity: 1,
+            interactive: false
+          }).addTo(map);
+          map.maskLayer = maskPolygon;
+
+          // Highlight Alberta outline on top of the mask
+          const albertaLayer = L.geoJSON(albertaFeature, {
+            style: {
+              color: '#222',
+              weight: 2.5,
+              fillColor: '#ffd54f',
+              fillOpacity: 0.1
+            }
+          }).addTo(map);
+          map.albertaLayer = albertaLayer;
+          
+          map.albertaGeoJSON = albertaFeature; // For click detection
+
+          // Fit to Alberta bounds exactly once on initial load.
+          if (!map._albertaFitted) {
+            const bounds = albertaLayer.getBounds();
+              // Add slight padding so border isn't flush with viewport.
+            map.fitBounds(bounds, { padding: [25, 25] });
+            map._albertaFitted = true;
+          }
+        }
+      })
+      .catch(err => {
+        console.error('Failed to render Alberta-focused layering:', err);
+      });
+  };
+
+  // Removed automatic user geolocation recentering per request.
+  updateStatus('Map centered on Alberta, Canada.');
 
   return map;
+};
+
+const ALBERTA_CENTER = L.latLng(53.9333, -116.5765);
+const ALBERTA_BOUNDS_PADDING_DEG = 6; // Rough padding box to keep focus in province
+const isWithinAlbertaBox = (latlng) => {
+  return latlng.lat <= (ALBERTA_CENTER.lat + ALBERTA_BOUNDS_PADDING_DEG) &&
+         latlng.lat >= (ALBERTA_CENTER.lat - ALBERTA_BOUNDS_PADDING_DEG) &&
+         latlng.lng <= (ALBERTA_CENTER.lng + ALBERTA_BOUNDS_PADDING_DEG) &&
+         latlng.lng >= (ALBERTA_CENTER.lng - ALBERTA_BOUNDS_PADDING_DEG);
 };
 
 const placePredictionMarkers = (map, predictions) => {
@@ -132,24 +155,99 @@ const placePredictionMarkers = (map, predictions) => {
     return;
   }
 
-  const bounds = L.latLngBounds();
+  // Markers removed - no location markers will be displayed
+  // No bounds fitting needed since there are no markers
+  updateStatus('Sample data displayed. Replace the API stub with your model outputs.');
+};
 
-  regions.forEach((region) => {
-    const confidence = Math.round(region.confidence * 100);
-    const coordinates = L.latLng(region.coordinates);
+const renderCloudSeedingOverlay = (map, payload) => {
+  const gridPoints = payload?.data ?? [];
+  if (!gridPoints.length) {
+    console.warn('No cloud seeding data available for overlay.');
+    return;
+  }
 
-    L.marker(coordinates)
-      .addTo(map)
-      .bindPopup(`
-        <strong>${region.name}</strong><br />
-        Estimated cloud seeding suitability: ${confidence}%
-      `);
+  const step = payload?.meta?.step ?? 0.25;
+  const halfStep = step / 2;
+  const maxOpacity = 0.85;
 
-    bounds.extend(coordinates);
+  if (map.cloudSeedingLayer) {
+    map.removeLayer(map.cloudSeedingLayer);
+  }
+
+  const layer = L.layerGroup();
+
+  gridPoints.forEach(point => {
+    const lat = Number(point?.latitude);
+    const lon = Number(point?.longitude);
+    const score = Number(point?.seeding_score);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return;
+    }
+
+    if (!Number.isFinite(score)) {
+      return;
+    }
+
+    const clamped = Math.max(0, Math.min(1, score));
+
+    const bounds = [
+      [lat - halfStep, lon - halfStep],
+      [lat + halfStep, lon + halfStep]
+    ];
+
+    const rect = L.rectangle(bounds, {
+      stroke: false,
+      fill: true,
+      // Updated from green to blue for better contrast per request
+      fillColor: '#1565c0',
+      fillOpacity: clamped * maxOpacity,
+      interactive: false
+    });
+
+    layer.addLayer(rect);
   });
 
-  map.fitBounds(bounds, { padding: [30, 30] });
-  updateStatus('Sample data displayed. Replace the API stub with your model outputs.');
+  if (layer.getLayers().length) {
+    layer.addTo(map);
+    map.cloudSeedingLayer = layer;
+  }
+};
+
+const setupDaysSlider = (map) => {
+  const slider = document.getElementById('days-slider');
+  const valueDisplay = document.getElementById('days-value');
+  
+  if (!slider || !valueDisplay) {
+    console.error('Days slider elements not found');
+    return;
+  }
+
+  const updateCloudSeeding = async (days) => {
+    try {
+      updateStatus(`Updating cloud seeding data for ${days} days...`);
+      const cloudSeeding = await fetchCloudSeedingScores(days);
+      renderCloudSeedingOverlay(map, cloudSeeding);
+      // Reapply the black overlay on top after updating cloud seeding data
+      if (map._setupOverlay) {
+        map._setupOverlay();
+      }
+      updateStatus(`Cloud seeding data updated for ${days} days ahead.`);
+    } catch (error) {
+      console.error('Failed to update cloud seeding data:', error);
+      updateStatus('Failed to update cloud seeding data.', true);
+    }
+  };
+
+  slider.addEventListener('input', (e) => {
+    const days = parseInt(e.target.value);
+    valueDisplay.textContent = days;
+  });
+
+  slider.addEventListener('change', (e) => {
+    const days = parseInt(e.target.value);
+    updateCloudSeeding(days);
+  });
 };
 
 const initialize = async () => {
@@ -160,6 +258,23 @@ const initialize = async () => {
     updateStatus('Fetching sample predictions...');
     const predictions = await fetchPredictions();
     placePredictionMarkers(map, predictions);
+
+    updateStatus('Applying cloud seeding overlay...');
+    try {
+      const cloudSeeding = await fetchCloudSeedingScores(7); // Default to 7 days
+      renderCloudSeedingOverlay(map, cloudSeeding);
+      // Add the black overlay after cloud seeding tiles so it appears on top
+      map._setupOverlay();
+      updateStatus('Sample data displayed with cloud seeding overlay.');
+    } catch (overlayError) {
+      console.error(overlayError);
+      // Even if cloud seeding fails, we still want the black overlay
+      map._setupOverlay();
+      updateStatus('Sample data displayed. Cloud seeding overlay unavailable.');
+    }
+
+    // Setup the days slider after map is initialized
+    setupDaysSlider(map);
   } catch (error) {
     console.error(error);
     updateStatus(error.message, true);
