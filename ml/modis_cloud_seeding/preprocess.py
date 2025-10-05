@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -78,6 +81,10 @@ class XarrayUnavailable(RuntimeError):
 
 class PyHDFUnavailable(RuntimeError):
     """Raised when pyhdf is required but missing."""
+
+
+LatLonBox = Tuple[float, float, float, float]
+GridSize = Tuple[float, float]
 
 
 @dataclass
@@ -195,39 +202,257 @@ def load_granule(path: Path):
     raise ValueError(f"Failed to open granule '{path}'. Tried backends: {detail}. {hint}")
 
 
+def _dataset_contains(dataset, name: str) -> bool:
+    try:
+        return name in dataset
+    except Exception:  # pragma: no cover - defensive guard
+        return False
+
+
+def _dataset_to_numpy(dataset, name: str) -> np.ndarray:
+    data = dataset[name]
+    values = getattr(data, "values", data)
+    return np.asarray(values, dtype=np.float32)
+
+
+def _extract_lat_lon(dataset) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    lat_keys = ("Latitude", "latitude", "Latitude_deg")
+    lon_keys = ("Longitude", "longitude", "Longitude_deg")
+    lat = lon = None
+    for key in lat_keys:
+        if _dataset_contains(dataset, key):
+            lat = _dataset_to_numpy(dataset, key)
+            break
+    for key in lon_keys:
+        if _dataset_contains(dataset, key):
+            lon = _dataset_to_numpy(dataset, key)
+            break
+    if lat is None or lon is None:
+        return None, None
+    if lat.shape != lon.shape:
+        return None, None
+    return lat, lon
+
+
+def _bbox_mask(lat: np.ndarray, lon: np.ndarray, bbox: LatLonBox) -> np.ndarray:
+    lon_min, lat_min, lon_max, lat_max = bbox
+    return (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
+
+
+def _apply_mask(values: np.ndarray, mask: Optional[np.ndarray]) -> np.ndarray:
+    if mask is None:
+        return values
+    if values.shape != mask.shape:
+        return values
+    return np.where(mask, values, np.nan)
+
+
+def _extract_granule_metadata(granule_name: str) -> Dict[str, str]:
+    pattern = re.compile(r"A(\d{4})(\d{3})\.(\d{2})(\d{2})")
+    match = pattern.search(granule_name)
+    metadata: Dict[str, str] = {}
+    if match:
+        year, doy, hour, minute = match.groups()
+        timestamp = datetime.strptime(f"{year}{doy}{hour}{minute}", "%Y%j%H%M")
+        metadata["timestamp_utc"] = timestamp.replace(tzinfo=None).isoformat()
+        metadata["date"] = timestamp.date().isoformat()
+    if granule_name.startswith("MOD"):
+        metadata["platform"] = "Terra"
+    elif granule_name.startswith("MYD"):
+        metadata["platform"] = "Aqua"
+    else:
+        metadata["platform"] = "Unknown"
+    return metadata
+
+
+def _normalise_grid_size(grid_size: Optional[Sequence[float]]) -> Optional[GridSize]:
+    if grid_size is None:
+        return None
+    if isinstance(grid_size, (float, int)):
+        value = float(grid_size)
+        if value <= 0:
+            raise ValueError("Grid size must be positive.")
+        return (value, value)
+    if len(grid_size) != 2:
+        raise ValueError("Grid size must contain exactly two floats (lat_step, lon_step).")
+    lat_step = float(grid_size[0])
+    lon_step = float(grid_size[1])
+    if lat_step <= 0 or lon_step <= 0:
+        raise ValueError("Grid size components must be positive.")
+    return (lat_step, lon_step)
+
+
+def _grid_cells(
+    lat: np.ndarray,
+    lon: np.ndarray,
+    mask: np.ndarray,
+    bbox: LatLonBox,
+    grid_size: GridSize,
+) -> List[Dict[str, object]]:
+    lon_min, lat_min, lon_max, lat_max = bbox
+    lat_step, lon_step = grid_size
+
+    mask = mask & np.isfinite(lat) & np.isfinite(lon)
+    if not np.any(mask):
+        return []
+
+    lat_flat = lat.reshape(-1)
+    lon_flat = lon.reshape(-1)
+    mask_flat = mask.reshape(-1)
+    valid_idx = np.flatnonzero(mask_flat)
+    if valid_idx.size == 0:
+        return []
+
+    lat_sel = lat_flat[valid_idx]
+    lon_sel = lon_flat[valid_idx]
+
+    n_lat = max(1, int(math.ceil((lat_max - lat_min) / lat_step)))
+    n_lon = max(1, int(math.ceil((lon_max - lon_min) / lon_step)))
+
+    row_idx = np.floor((lat_sel - lat_min) / lat_step).astype(int)
+    col_idx = np.floor((lon_sel - lon_min) / lon_step).astype(int)
+
+    valid_bounds = (
+        (row_idx >= 0)
+        & (row_idx < n_lat)
+        & (col_idx >= 0)
+        & (col_idx < n_lon)
+    )
+    if not np.any(valid_bounds):
+        return []
+
+    valid_idx = valid_idx[valid_bounds]
+    row_idx = row_idx[valid_bounds]
+    col_idx = col_idx[valid_bounds]
+
+    cell_ids = row_idx * n_lon + col_idx
+    unique_cells, inverse = np.unique(cell_ids, return_inverse=True)
+
+    cells: List[Dict[str, object]] = []
+    for local_index, cell_id in enumerate(unique_cells):
+        member_mask = inverse == local_index
+        member_indices = valid_idx[member_mask]
+        row = int(cell_id // n_lon)
+        col = int(cell_id % n_lon)
+        lat_center = lat_min + (row + 0.5) * lat_step
+        lon_center = lon_min + (col + 0.5) * lon_step
+        cells.append(
+            {
+                "cell_id": f"cell_r{row}_c{col}",
+                "row": row,
+                "col": col,
+                "lat_center": float(lat_center),
+                "lon_center": float(lon_center),
+                "indices": member_indices,
+            }
+        )
+    return cells
+
+
 def extract_features(
     path: Path,
     features: Dict[str, FeatureSpec] = DEFAULT_FEATURES,
     *,
     region_id: Optional[str] = None,
     metadata: Optional[Dict[str, str]] = None,
+    bounding_box: Optional[LatLonBox] = None,
+    grid_size: Optional[Sequence[float]] = None,
 ) -> pd.DataFrame:
     """Extract configured features from a single granule as a one-row DataFrame."""
 
     dataset = load_granule(path)
     rows: Dict[str, float] = {}
+    bbox_mask: Optional[np.ndarray] = None
+    normalised_grid = _normalise_grid_size(grid_size)
+    lat: Optional[np.ndarray] = None
+    lon: Optional[np.ndarray] = None
+
     try:
-        for name, spec in features.items():
+        if bounding_box is not None:
+            lat, lon = _extract_lat_lon(dataset)
+            if lat is not None and lon is not None:
+                bbox_mask = _bbox_mask(lat, lon, bounding_box)
+        if normalised_grid is None:
+            for name, spec in features.items():
+                if spec.variable not in dataset:
+                    rows[name] = float("nan")
+                    continue
+                data_array = dataset[spec.variable]
+                values = getattr(data_array, "values", data_array)
+                values = np.asarray(values, dtype=np.float32)
+                masked = _apply_mask(values, bbox_mask)
+                rows[name] = spec.reduce(masked)
+
+        merged_metadata = _extract_granule_metadata(path.name)
+        base_metadata: Dict[str, str] = {}
+        if metadata:
+            for key, value in metadata.items():
+                base_metadata.setdefault(f"meta_{key}", value)
+        for key, value in merged_metadata.items():
+            base_metadata.setdefault(f"meta_{key}", value)
+
+        if normalised_grid is None:
+            result = {
+                "granule": path.name,
+                **rows,
+                **base_metadata,
+            }
+            if region_id:
+                result["region_id"] = region_id
+            return pd.DataFrame([result])
+
+        if bounding_box is None:
+            raise ValueError("Grid-based extraction requires a bounding_box to be specified.")
+
+        if lat is None or lon is None:
+            lat, lon = _extract_lat_lon(dataset)
+        if lat is None or lon is None:
+            raise ValueError("Latitude/Longitude variables are required for grid extraction.")
+
+        bbox_mask = bbox_mask if bbox_mask is not None else _bbox_mask(lat, lon, bounding_box)
+        cells = _grid_cells(lat, lon, bbox_mask, bounding_box, normalised_grid)
+        if not cells:
+            return pd.DataFrame()
+
+        arrays_cache: Dict[str, Optional[np.ndarray]] = {}
+        for spec in features.values():
             if spec.variable not in dataset:
-                rows[name] = float("nan")
+                arrays_cache[spec.variable] = None
                 continue
             data_array = dataset[spec.variable]
-            rows[name] = spec.reduce(data_array.values)
+            values = getattr(data_array, "values", data_array)
+            arrays_cache[spec.variable] = np.asarray(values, dtype=np.float32).reshape(-1)
+
+        records: List[Dict[str, object]] = []
+        lat_step, lon_step = normalised_grid
+        parent_region = region_id if region_id else None
+        for cell in cells:
+            cell_indices = cell["indices"]
+            record: Dict[str, object] = {
+                "granule": path.name,
+                "region_id": f"{parent_region}_{cell['cell_id']}" if parent_region else cell["cell_id"],
+                "grid_row": cell["row"],
+                "grid_col": cell["col"],
+                "cell_lat_center": cell["lat_center"],
+                "cell_lon_center": cell["lon_center"],
+                "grid_lat_step": lat_step,
+                "grid_lon_step": lon_step,
+                **base_metadata,
+            }
+            for name, spec in features.items():
+                values_flat = arrays_cache.get(spec.variable)
+                if values_flat is None:
+                    record[name] = float("nan")
+                    continue
+                cell_values = values_flat[cell_indices]
+                record[name] = spec.reduce(cell_values)
+            records.append(record)
+
+        return pd.DataFrame(records)
     finally:
         close = getattr(dataset, "close", None)
         if callable(close):
             close()
-
-    result = {
-        "granule": path.name,
-        **rows,
-    }
-    if region_id:
-        result["region_id"] = region_id
-    if metadata:
-        for key, value in metadata.items():
-            result[f"meta_{key}"] = value
-    return pd.DataFrame([result])
 
 
 def export_features(
@@ -236,12 +461,24 @@ def export_features(
     *,
     features: Dict[str, FeatureSpec] = DEFAULT_FEATURES,
     region_id: Optional[str] = None,
+    bounding_box: Optional[LatLonBox] = None,
+    grid_size: Optional[Sequence[float]] = None,
 ) -> None:
     """Process multiple granules and persist their features to CSV."""
 
     frames = [
-        extract_features(path, features=features, region_id=region_id) for path in granules
+        extract_features(
+            path,
+            features=features,
+            region_id=region_id,
+            metadata=None,
+            bounding_box=bounding_box,
+            grid_size=grid_size,
+        )
+        for path in granules
     ]
+    if not frames:
+        raise ValueError("No granules supplied for feature extraction.")
     table = pd.concat(frames, ignore_index=True)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(output_csv, index=False)

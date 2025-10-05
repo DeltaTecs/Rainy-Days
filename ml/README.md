@@ -69,14 +69,24 @@ keep the date/bounding box metadata handy for downstream steps.
 
 ## Preprocessing
 
-Convert the downloaded granules into a feature table:
+Convert the downloaded granules into a feature table, masking the statistics to your
+province bounding box. The helpers now accept a `bounding_box` argument and append
+platform/timestamp metadata derived from the filename:
 
 ```python
 from pathlib import Path
 from ml.modis_cloud_seeding import preprocess
 
-raw_paths = Path("data/raw/mod06").glob("*.hdf")
-preprocess.export_features(raw_paths, Path("data/processed/example_features.csv"))
+raw_paths = Path("workspace/download/downloads").glob("*.hdf")
+province_bbox = (-120.0, 49.5, -109.0, 59.5)
+# 0.25° grid (~25 km) capturing sub-regions across the province.
+grid_deg = (0.25, 0.25)
+preprocess.export_features(
+    raw_paths,
+    Path("data/processed/granule_features.csv"),
+    bounding_box=province_bbox,
+    grid_size=grid_deg,
+)
 ```
 
 If you customise the feature extraction, export the configuration for reproducibility:
@@ -84,6 +94,19 @@ If you customise the feature extraction, export the configuration for reproducib
 ```python
 from ml.modis_cloud_seeding import preprocess
 preprocess.save_feature_config(preprocess.DEFAULT_FEATURES, Path("ml_artifacts/features.json"))
+```
+
+### Daily aggregation
+
+For forecasting we operate on daily aggregates (optionally split by Terra/Aqua). Convert
+the per-granule table into daily statistics with the CLI helper:
+
+```bash
+python -m ml.modis_cloud_seeding.daily \
+  --input data/processed/granule_features.csv \
+  --output data/processed/daily_features.csv
+
+# Add --split-platforms to keep Terra and Aqua features in separate columns.
 ```
 
 ## Training
@@ -96,6 +119,23 @@ python -m ml.modis_cloud_seeding.train --config ml/modis_cloud_seeding/configs/d
 ```
 
 Artifacts (best model checkpoint and metrics) are written to the directory specified in the config.
+
+## Forecast & seedability scoring
+
+Train short-horizon property forecasters (1, 2, 3, and 7 days ahead by default) and
+derive a seedability percentage for every grid cell with:
+
+```bash
+python -m ml.modis_cloud_seeding.forecast \
+  --daily-features data/processed/daily_features.csv \
+  --output data/processed/daily_predictions.csv \
+  --artifacts-dir ml_artifacts/forecasts
+```
+
+Each horizon trains a multi-output LightGBM model shared across all grid cells. Artefacts
+(models, metrics, backtests) are saved under `ml_artifacts/forecasts/`, and the output
+CSV lists the grid cell metadata (`region_id`, centre lat/lon), forecast date, predicted
+cloud properties, `seedability_score`, and `seedability_percent` for each cell.
 
 ## Next Steps
 
